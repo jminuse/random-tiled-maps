@@ -1,0 +1,1096 @@
+<html>
+<head>
+<title>Random Map</title>
+</head>
+<body>
+	<div id='game-box'>
+		<canvas id="map-canvas" style="background:black; position:absolute; top:0px; left:0px;"></canvas>
+		<canvas id="highlight-canvas" style="position:absolute; top:0px; left:0px; pointer-events:none;"></canvas>
+		<canvas id="drag-path-canvas" style="position:absolute; top:0px; left:0px; pointer-events:none;"></canvas>
+		<canvas id="orders-canvas" style="position:absolute; top:0px; left:0px; pointer-events:none; opacity:0.7;"></canvas>
+		<div id="starting-army-box" style="position:fixed; top:2%; left:12em; pointer-events:none; text-align:center; background:rgba(255,255,255,0.7); border-radius:5px;"></div>
+	
+		<div style="position:fixed; top:2%; left:2%; z-index:10;">
+			<div id="sun-moon-image" style="width:8em; height:8em; background-size:contain;"></div>
+			<div id="current-player-name-bar" style="background:rgba(255,255,255,0.7); border-radius:5px; padding:3px; margin-top:5px;"></div>
+			<div id="info-box" style="width:8em; background:rgba(255,255,255,0.7); border-radius:5px; padding:3px; display:none; margin-top:5px;"></div>
+			<div id="garrison-box" style="width:8em; background:rgba(255,255,255,0.7); border-radius:5px; padding:3px; display:none; margin-top:5px;"></div>
+		</div>
+	
+		<div id="held-units-box" style="position:absolute; pointer-events:none; z-index:11;"></div>
+		<div id="drag-highlight-box" style="position:absolute; border:1px solid yellow; display:none; pointer-events:none; z-index:9;"></div>
+		<div id="status-bar" style="position:fixed; left:10px; bottom:2em; background:rgba(255,255,255,0.7); border-radius:5px; padding:3px; display:none; z-index:10;"></div>
+	</div>
+<script>
+//Math.random = function() {return 0.5;} //generate constrant map for debugging
+var info_box = document.getElementById("info-box");
+var status_bar = document.getElementById("status-bar");
+var garrison_box = document.getElementById("garrison-box");
+var starting_army_box = document.getElementById("starting-army-box");
+var held_units_box = document.getElementById("held-units-box");
+var current_player_name_bar = document.getElementById("current-player-name-bar");
+var sun_moon_image = document.getElementById('sun-moon-image');
+sun_moon_image.onmouseover = function() {sun_moon_image.style.opacity = 0.2; return false;}
+sun_moon_image.onmouseout = function() {sun_moon_image.style.opacity = 1.0; return false;}
+var game_box = document.getElementById('game-box');
+var canvas = document.getElementById('map-canvas');
+var g = canvas.getContext("2d");
+var highlight_canvas = document.getElementById('highlight-canvas');
+var highlight_g = highlight_canvas.getContext("2d");
+var drag_path_canvas = document.getElementById('drag-path-canvas');
+var drag_path_g = drag_path_canvas.getContext("2d");
+var orders_canvas = document.getElementById('orders-canvas');
+var orders_g = orders_canvas.getContext("2d");
+orders_canvas.width = drag_path_canvas.width = highlight_canvas.width = canvas.width = window.innerWidth;
+orders_canvas.height = drag_path_canvas.height = highlight_canvas.height = canvas.height = window.innerHeight;
+(function() {
+  var requestAnimationFrame = window.requestAnimationFrame || window.mozRequestAnimationFrame ||
+                              window.webkitRequestAnimationFrame || window.msRequestAnimationFrame;
+  window.requestAnimationFrame = requestAnimationFrame;
+})();
+function rint(d) {return Math.random()*d|0;}
+function rf(f) {return Math.random()*f;}
+function clearDOM(e) {while(e.firstChild) e.removeChild(e.firstChild);};
+function Point(x,y) {this.x=x; this.y=y; this.z=0.0;}
+function Edge(point1,point2,tile1,tile2) {this.point1=point1; this.point2=point2; this.tile1=tile1; this.tile2=tile2;}
+function Tile(points) {
+	this.points=points;
+	this.edges = [];
+	this.neighbors = [];
+	this.elevation = 0; //meters
+	this.coast = false;
+	this.fillStyle = null; this.strokeStyle = null;
+	this.title = "";
+	this.x = -1; this.y = -1;
+	this.base_temperature = -1; //Celcius
+	this.temperature = -1;
+	this.moisture = 0;
+	this.defense = 0;
+	this.player = null;
+	this.garrison = [];
+	this.garrison_image = document.createElement('div');
+	this.spies = []; //will contain spies from multiple players
+	this.spies_image = document.createElement('div');
+	this.power_production = 0;
+	this.gold_production = 0;
+	this.ore_production = 0;
+	this.wood_production = 0;
+	this.food_production = 0;
+}
+var points = [];
+var edges = [];
+var tiles = [];
+var vertices_grid = [];
+var tiles_grid = [];
+var tile_scale = 60;
+var vertices_grid_width = canvas.offsetWidth/tile_scale|0; var vertices_grid_height = canvas.offsetHeight/tile_scale|0;
+var pixel_width = canvas.offsetWidth; pixel_height = canvas.offsetHeight;
+
+for(var x=0; x<pixel_width+1; x+=(pixel_width/vertices_grid_width)|0) { //add vertices
+	vertices_grid.push([]);
+	for(var y=0; y<pixel_height+tile_scale; y+=(pixel_height/vertices_grid_height/2)|0) {
+		var a = new Point(x,y);
+		vertices_grid[vertices_grid.length-1].push(a);
+		points.push(a);
+	}
+}
+for(var x=0; x<vertices_grid.length-1; x++) { //merge the vertices into rectangles
+	tiles_grid.push([]);
+	for(var y=0; y<vertices_grid[x].length-3; y+=2) {
+		if(x%2==0)
+			tiles.push(new Tile([ vertices_grid[x][y], vertices_grid[x+1][y], vertices_grid[x+1][y+1], vertices_grid[x+1][y+2], vertices_grid[x][y+2], vertices_grid[x][y+1] ]));
+		else
+			tiles.push(new Tile([ vertices_grid[x][y+1], vertices_grid[x+1][y+1], vertices_grid[x+1][y+2], vertices_grid[x+1][y+3], vertices_grid[x][y+3], vertices_grid[x][y+2] ]));
+		
+		tiles_grid[tiles_grid.length-1].push(tiles[tiles.length-1]);
+		tiles[tiles.length-1].x = tiles_grid.length-1;
+		tiles[tiles.length-1].y = tiles_grid[tiles_grid.length-1].length-1;
+	}
+}
+var edges_map = {};
+for(var i=0; i<tiles.length; i++) { //add edges to tiles
+	var t = tiles[i];
+	for(var j=0; j<t.points.length; j++) {
+		var a = j; var b = j+1;
+		if(b==t.points.length) b = 0; //wrap
+		var key1 = t.points[a].x+','+t.points[a].y+','+t.points[b].x+','+t.points[b].y;
+		var key2 = t.points[b].x+','+t.points[b].y+','+t.points[a].x+','+t.points[a].y;
+		var edge = edges_map[key1] || edges_map[key2];
+		if(!edge) {
+			edge = new Edge(t.points[a], t.points[b]);
+			edges_map[key1] = edge;
+			edges.push(edge);
+		}
+		t.edges.push(edge);
+		if(!edge.tile1) edge.tile1 = t;
+		else edge.tile2 = t;
+	}
+}
+for(var x=0; x<vertices_grid_width; x++) { //Make rectangles into hexes
+	for(var y=0; y<2*vertices_grid_height-1; y++) {
+		vertices_grid[x][y].x += (x%2==0?-1:1) * (y%2==0?-1:1) * (pixel_width/vertices_grid_width)*0.15|0;
+	}
+}
+var diff = (pixel_width/vertices_grid_width)|0;
+for(var x=0; x<vertices_grid.length; x++) { //add randomization factor
+	for(var y=0; y<vertices_grid[x].length; y++) {
+		if(x!=0 && x<vertices_grid.length-1) vertices_grid[x][y].x += (Math.random()*diff)|0 - diff/2;
+		if(y!=0 && y<vertices_grid[x].length-2) vertices_grid[x][y].y += (Math.random()*diff)|0 - diff/2;
+		if(x==0) vertices_grid[x][y].x = 0;
+		else if(x>vertices_grid.length-2) vertices_grid[x][y].x = pixel_width;
+		if(y<2) vertices_grid[x][y].y = 0;
+		else if(y>vertices_grid[x].length-4) vertices_grid[x][y].y = pixel_height;
+	}
+}
+var scale_elevation = 2500*40/tiles_grid.length|0;
+var fractures = 10;
+for(var i=0; i<fractures; i++) { //Set initial elevation
+	//pick a random line and raise half, lower half of the map
+	var x1=rf(pixel_width), x2=rf(pixel_width), y1=rf(pixel_height),y2=rf(pixel_height);
+	//var x1=pixel_width/2,x2=pixel_width/2+1,y1=pixel_height/2,y2=y1+100;
+	var m = (y1-y2)/(x1-x2);
+	var upside = rint(2);
+	for(var x=0; x<vertices_grid.length; x++) {
+		for(var y=0; y<vertices_grid[x].length; y++) {
+			if(y*tile_scale/2<m*(x*tile_scale-x1)+y1? upside : !upside)
+				vertices_grid[x][y].z += scale_elevation/fractures*0.5;
+			else
+				vertices_grid[x][y].z -= scale_elevation/fractures*0.33;
+		}
+	}
+}
+for(var x=0; x<vertices_grid.length; x++) {
+	for(var y=0; y<vertices_grid[x].length; y++) {
+		vertices_grid[x][y].z += (rf(2)-1)*2*scale_elevation;
+	}
+}
+for(var i=0; i<6; i++) { //Average elevations
+	for(var x=1; x<vertices_grid.length-1; x++) { 
+		for(var y=1; y<vertices_grid[x].length-1; y++) {
+			vertices_grid[x][y].z = (vertices_grid[x][y].z*2+vertices_grid[x+1][y+1].z+vertices_grid[x][y+1].z+vertices_grid[x-1][y+1].z+vertices_grid[x-1][y].z+vertices_grid[x-1][y-1].z+vertices_grid[x][y-1].z+vertices_grid[x+1][y-1].z+vertices_grid[x+1][y].z)/10 | 0;
+		}
+	}
+	for(var x=0; x<vertices_grid.length; x++) { vertices_grid[x][0].z = -scale_elevation/10; }
+	for(var x=0; x<vertices_grid.length; x++) { vertices_grid[x][vertices_grid[x].length-1].z = -scale_elevation/10; }
+	for(var y=0; y<vertices_grid[0].length; y++) { vertices_grid[0][y].z = -scale_elevation/10; }
+	for(var y=0; y<vertices_grid[0].length; y++) { vertices_grid[vertices_grid.length-1][y].z = -scale_elevation/10; }
+}
+var name_types = [['Deep','Abyss','Trench'],['Sea','Bay','Ocean','Gulf'],['Shoals','Rocks','Reefs','Firth','Anchorage'], ['Delta','Coast','Wash','Strand'], ['Forest','Woods','Land','Plain','Fields'],['Hills','Fells','Ridge','Heights','Plateau'],['Peaks','Mountain','Spires']];
+var names = ['Albicant', 'Amaranthine', 'Aubergine', 'Azure', 'Celadon', 'Cerulean', 'Chartreuse', 'Cinnabar', 'Citrine', 'Eburnean', 'Erythraean', 'Flavescent', 'Greige', 'Haematic', 'Isabelline', 'Jacinthe', 'Kermes', 'Lovat', 'Madder', 'Mauve', 'Mazarine', 'Russet', 'Sable', 'Saffron', 'Sarcoline', 'Smaragdine', 'Tilleul', 'Titian', 'Vermilion', 'Virid', 'Viridian', 'Xanthic', 'Zinnober'];
+var Stats = {"cerberus":[100,60,1,3,1], "dragon":[200,70,3,4,2], "fairy":[5,9,15,1,6], "giant":[250,50,1,4,1], "golem":[300,30,1,4,1], "leprechaun":[10,10,12,1,2], "mermaid":[40,35,6,2,3,'aquatic'], "sphinx":[150,40,4,3,2], "troll":[200,30,6,3,1], "vampire":[30,30,10,2,2,'nocturnal','undead'], "werewolf":[20,60,1,2,2,'nocturnal'], "zombie":[20,20,4,1,1,'undead'], "dwelling":[4,0,0,10,0,'building','producer'], "farm":[1,0,0,0,0,'building'], "fort":[1000,100,0,0,0,'building'], "ship":[500,30,0,10,2,'aquatic','building','producer','transport'], "airship":[100,10,0,10,4,'flying','building','producer','transport'] }; //health,strength,stealth,cost,speed,special
+var UnitTypes = Object.keys(Stats);
+for(var i=0; i<tiles.length; i++) { //set tile elevations
+	var p = tiles[i];
+	p.px = (p.points[0].x+p.points[1].x+p.points[2].x+p.points[3].x+p.points[4].x+p.points[5].x)/6 | 0;
+	p.py = (p.points[0].y+p.points[1].y+p.points[2].y+p.points[3].y+p.points[4].y+p.points[5].y)/6 | 0;
+	p.elevation = (p.points[0].z+p.points[1].z+p.points[2].z+p.points[3].z+p.points[4].z+p.points[5].z)/6 | 0;
+}
+for(var i=0; i<tiles.length; i++) { //set tile properties (requires all elevations)
+	var p = tiles[i];
+	for(var ix=Math.max(p.x-1,0); ix<Math.min(p.x+2,tiles_grid.length); ix++) {
+		for(var iy=Math.max(p.y-1,0); iy<Math.min(p.y+2,tiles_grid[ix].length); iy++) {
+			if( !(p.x%2==1 && iy==p.y-1 && ix!=p.x) && !(p.x%2==0 && iy==p.y+1 && ix!=p.x) ) {
+				p.neighbors.push(tiles_grid[ix][iy]);
+				if(p.elevation>=0 && tiles_grid[ix][iy].elevation<0) p.coast=true;
+			}
+		}
+	}
+	var image_w = 30, image_h = 30;
+	p.garrison_image.style.cssText = "pointer-events:none; position:absolute; top:"+(p.py-image_h/2|0)+"px; left:"+(p.px-image_w/2|0)+"px;";
+	document.body.appendChild(p.garrison_image);
+	
+	p.base_temperature = 15+(p.y-tiles_grid[0].length)*0.3 - (p.elevation>=0?p.elevation*0.01:rint(3)) | 0;
+	p.temperature = p.base_temperature;
+	p.moisture = (10 - p.temperature)*6;
+	p.defense = Math.max(p.elevation/100+rint(3),0) | 0;
+	
+	var types = name_types[p.elevation<-700?0:(p.elevation<-100?1:(p.elevation<0?2:(p.coast?3:(p.elevation<500?4:(p.elevation<1000?5:6)))))];
+	p.title = rint(2)==0? types[rint(types.length)]+' of '+names[rint(names.length)] : names[rint(names.length)] +' '+ types[rint(types.length)];
+
+	var highest=p.points[0],lowest=p.points[0];
+	for(var j=1; j<p.points.length; j++) {
+		if(p.points[j].z>highest.z) highest = p.points[j];
+		else if(p.points[j].z<lowest.z) lowest = p.points[j];
+	}
+	var high_color = tile_color(p,highest,false);
+	var low_color = tile_color(p,lowest,false);
+	var gradient = g.createLinearGradient(highest.x,highest.y, lowest.x,lowest.y);
+	gradient.addColorStop(0.0, high_color);
+	gradient.addColorStop(1.0, low_color);
+	p.fillStyle = gradient;
+	
+	var high_color = tile_color(p,highest,true);
+	var low_color = tile_color(p,lowest,true);
+	var gradient = g.createLinearGradient(highest.x,highest.y, lowest.x,lowest.y);
+	gradient.addColorStop(0.0, high_color);
+	gradient.addColorStop(1.0, low_color);
+	p.fillStyle_night = gradient;
+}
+function make_path(p,g) {
+	g.beginPath();
+	g.moveTo(p.points[0].x, p.points[0].y);
+	for(var j=1; j<p.points.length; j++) {
+		g.lineTo(p.points[j].x, p.points[j].y);
+	}
+	g.closePath();
+}
+g.strokeStyle = "hsla(0,50%,50%,1.0)";
+g.lineCap = 'round';
+g.lineJoin = 'round';
+highlight_g.lineCap = 'round';
+highlight_g.lineJoin = 'round';
+//g.globalCompositeOperation = 'destination-atop';
+function draw_edge(edge) {
+	if(!edge.tile1 || !edge.tile2 || edge.tile1.player==edge.tile2.player) {
+		g.beginPath();
+		g.moveTo(edge.point1.x, edge.point1.y);
+		g.lineTo(edge.point2.x, edge.point2.y);
+		g.lineWidth = 0.2;
+		g.strokeStyle = (edge.tile1 || edge.tile2).player.style;
+		g.stroke();
+	}
+}
+function draw_edge_if_border(edge) {
+	if(!edge.tile1 || !edge.tile2) {
+		g.beginPath();
+		g.moveTo(edge.point1.x, edge.point1.y);
+		g.lineTo(edge.point2.x, edge.point2.y);
+		g.lineWidth = 10;
+		g.strokeStyle = (edge.tile1 || edge.tile2).player.style;
+		g.stroke();
+	}
+	else if(edge.tile1.player!=edge.tile2.player) {
+		g.lineWidth = 6;
+		g.beginPath();
+		g.moveTo(edge.point1.x, edge.point1.y);
+		g.lineTo(edge.point2.x, edge.point2.y);
+		g.strokeStyle = "black";
+		g.stroke();
+	}
+}
+function tile_color(tile,vertex,is_night) {
+	return tile.elevation>=0 ? 
+	'hsl('+(120-Math.max(vertex.z*0.05,5)+Math.max(vertex.z-700,0)*0.22|0)+','+(80-Math.max(vertex.z-200,0)*0.12|0)+'%,'+((is_night?17:22)+0.04*vertex.z+0.3*Math.max(vertex.z-1000,0)|0)+'%)' :
+	'hsl('+(230-Math.max(vertex.z*0.02|0,-20))+','+(90)+'%,'+Math.max((is_night?50:55)+vertex.z*0.05|0,20)+'%)';
+};
+function draw_map(is_night) {
+	if(is_night) {
+		sun_moon_image.style.backgroundImage = 'url(http://www.clker.com/cliparts/d/a/e/c/11971491701291190574johnny_automatic_man_in_the_moon.svg.hi.png)';
+	}
+	else {
+		sun_moon_image.style.backgroundImage = 'url(http://upload.wikimedia.org/wikipedia/commons/thumb/9/92/Sol_de_Mayo-Bandera_de_Uruguay.svg/200px-Sol_de_Mayo-Bandera_de_Uruguay.svg.png)';
+	}
+	for(var i=0; i<tiles.length; i++) { //draw tiles
+		var p = tiles[i];
+		make_path(p,g);
+		g.fillStyle = p.fillStyle;
+		if(is_night) g.fillStyle = p.fillStyle_night;
+		g.fill();
+	}
+	for(var i=0; i<edges.length; i++) draw_edge(edges[i]);
+	for(var i=0; i<edges.length; i++) draw_edge_if_border(edges[i]);
+}
+function highlight(p) {
+	var x = p.x; var y = p.y
+	highlight_g.lineWidth = 3;
+	for(var i=0; i<p.neighbors.length; i++) {
+		highlight_g.strokeStyle = p.neighbors[i].player.style;
+		make_path(p.neighbors[i],highlight_g);
+		highlight_g.stroke();
+	}
+	highlight_g.lineWidth = 6;
+	highlight_g.strokeStyle = p.player.style;
+	make_path(p,highlight_g);
+	highlight_g.stroke();
+}
+function unhighlight(p) {
+	var x = p.x; var y = p.y;
+	highlight_g.clearRect(Math.max(tile_scale*(x-3),0), Math.max(tile_scale*(y-3),0), Math.min(tile_scale*(x+4),canvas.width), Math.min(tile_scale*(y+4),canvas.height));
+
+}
+var selected_tile = null;
+/*
+special abilities:
+undead: units killed by undead become undead of the same type
+nocturnal: +30 strength at night
+
+special ability ideas:
+aquatic: move in water without a ship
+juggernaut: no damage from small units (damage resistance)
+terraforming: change the elevation of terrain
+suBtle: always visible on the map, or always visible within N tiles away
+
+other ideas:
+need gold and power to produce units
+need wood and ore to build buildings
+need food to maintain units (max % health of each unit ~ food per unit)
+buildings as units (land-bound have speed=0, ocean-going and airborne can be ordered)
+buildings produce, not tiles
+aligned players: night vs day and sea vs lowlands vs mountains. Give bonuses to respective units.
+either land or sea units can move through coasts
+
+todo:
+orders persist from one turn to another
+make units faster
+spying
+provide vision for neighboring squares?
+can't click orders under controls!
+draw path with snap-to-grid, make freehand just an option
+make selection accurate again (account for padding and margins)
+check if your priority queue is actually worse than an unsorted list
+*/
+function Unit(type) {
+	this.type = type;
+	this.health = this.max_health = Stats[type][0];
+	this.strength = Stats[type][1];
+	this.stealth = Stats[type][2];
+	this.cost = Stats[type][3];
+	this.speed = Stats[type][4];
+	this.is = {};
+	for(var i=5; i<Stats[type].length; i++) this.is[Stats[type][i]] = true;
+	if(this.is.producer) {
+		this.is.producer = UnitTypes[rint(UnitTypes.length-3)];
+	}
+	this.power = 0;
+	this.movement_remaining = this.speed;
+	this.image = document.createElement('span');
+	this.image.innerHTML = "<span style='position:absolute; top:0px; left:0px; width:100%; height:10%; background-color:red; display:inline-block;'></span><img src='images/"+type+".png'>";
+	this.image.style.position = 'relative';
+	this.image.style.display = 'inline-block';
+	this.image.style.margin = '2px';
+	
+	this.tile = null;
+	this.player = null;
+	this.order = null;
+}
+var Colors = [0,240,120,290,30,60];
+var Titles = ["Red","Blue","Green","Purple","Orange","Yellow"];
+function Player(number) {
+	this.starting_units = [];
+	for(var quality_sum = 0; quality_sum<2000; ) {
+		var unit = new Unit(UnitTypes[rint(UnitTypes.length)]);
+		unit.player = this;
+		this.starting_units.push(unit);
+		quality_sum += 10 + unit.health + 3*unit.strength + 2*unit.stealth;
+	}
+	this.units = this.starting_units.slice(0);
+	this.starting_units.sort(function(u1,u2) {return 1000*u2.cost+u2.strength-1000*u1.cost-u1.strength;});
+	this.number = number;
+	this.color = Colors[number];
+	this.style = "hsla("+this.color+",100%,50%,1.0)";
+	this.title = Titles[number];
+	this.started = false;
+	this.tiles = [];
+	this.orders = [];
+	this.alive = true;
+}
+function Order(path, units) {
+	this.path = path;
+	this.units = units;
+	this.image = null;
+	this.distance = 0.0;
+	for(var i=0; i<path.length-1; i++) {
+		this.distance += Math.sqrt( path[i].px*path[i].px+path[i].py*path[i].py );
+	}
+	this.traveled = 0.0;
+	this.path_location = 0;
+}
+function Queue() {
+	var first = 0, last = -1, list = [];
+	return function(value) {
+		if (value !== undefined) return list[++last] = value;
+		if (first > last) return undefined;
+		value = list[first];
+		delete list[first];
+		first++;
+		return value;
+	};
+}
+function PriorityQueue(comparator) {
+	list = [];
+	return function(value) {
+		if(value === undefined) { return list.pop(value); }
+		list.push(value);
+		list.sort(comparator);
+	};
+}
+function shuffle(o){
+    for(var j, x, i = o.length; i; j = rint(i), x = o[--i], o[i] = o[j], o[j] = x);
+    return o;
+};
+var players = [];
+for(var i=0; i<4; i++) players.push(new Player(i));
+function assign_tiles() {
+	var shuffled_players = shuffle(players.slice(0));
+	var tile_queue = PriorityQueue(function(t1,t2){return Math.abs(t.elevation-t1.elevation) - Math.abs(t.elevation-t2.elevation) + (t2.player.tiles.length - t1.player.tiles.length)*100;});
+	for(var i=0; i<tiles.length; i++) {
+		tiles[i].player = null;
+	}
+	for(var i=0; i<players.length; i++) { //assign seed locations
+		var t = tiles_grid[(i+0.5)*tiles_grid.length/players.length|0][rint(tiles_grid[0].length)];
+		t.player = shuffled_players[i];
+		t.player.tiles = [t];
+		tile_queue( t );
+	}
+	while(true) { //use paint fill algorithm (a priority queue by altitude difference)
+		var t = tile_queue();
+		if(t===undefined) break;
+		for(var j=0; j<t.neighbors.length; j++) {
+			if(t.neighbors[j].player==null) {
+				t.neighbors[j].player = t.player;
+				t.player.tiles.push(t.neighbors[j]);
+				tile_queue(t.neighbors[j]);
+			}
+		}
+	}
+}
+do { //try assigning tiles until an equitable distribution is reached
+	assign_tiles(); 
+	var done = true;
+	for(var i=0; i<players.length; i++) {
+		var error = Math.abs(players[i].tiles.length-tiles.length/players.length)/(tiles.length/players.length);
+		if(error>0.2) done=false;
+	}
+} while(!done);
+
+var current_player_number = -1;
+var held_units = [];
+var mousedown = null;
+var drag_highlight_box = document.getElementById("drag-highlight-box");
+function select_from_box(box,list,screenx,screeny,show_health) {
+	var topx = Math.min(screenx, mousedown.screenx);
+	var topy = Math.min(screeny, mousedown.screeny);
+	var bottomx = Math.max(screenx, mousedown.screenx);
+	var bottomy = Math.max(screeny, mousedown.screeny);
+	var select_list = [];
+	for(var i=0; i<box.childNodes.length; i++) {
+		var item = box.childNodes.item(i);
+		var left = item.offsetLeft + box.offsetLeft + box.parentNode.offsetLeft;
+		var right = left + item.offsetWidth;
+		var top = item.offsetTop + box.clientTop + box.parentNode.offsetTop;
+		var offsetParent = box.offsetParent;
+		//while(offsetParent) { top += offsetParent.offsetTop; offsetParent=offsetParent.offsetParent;}
+		var bottom = top + item.offsetHeight;
+		if(!( left > bottomx || right < topx || top > bottomy || bottom < topy)) { //rects intersect
+			select_list.push(i);
+		}
+	}
+	if(select_list.length>0)
+		var selected_something = true;
+	for(var i=0; i<select_list.length; i++) { //add units to selection
+		held_units.push(list[select_list[i]]);
+		if(!list[select_list[i]]) alert(i);
+		list[select_list[i]] = null;
+	} //then remove nulls from list
+	for(var i=0; i<list.length; i++) { if(list[i]==null) { list.splice(i,1);i--; } }
+	clearDOM(box);
+	for(var i=0; i<list.length; i++) {
+		box.appendChild(list[i].image);
+	}
+	if(list.length==0) box.style.display = 'none';
+	clearDOM(held_units_box);
+	for(var i=0; i<held_units.length; i++) {
+		held_units_box.appendChild(held_units[i].image);
+	}
+	return selected_something;
+}
+function set_garrison_image(tile) {
+	clearDOM(tile.garrison_image);
+	if(tile.garrison.length>0)
+		tile.garrison_image.innerHTML = '<img src="images/'+highest_ranking_unit(tile.garrison).type+'.png" style="opacity:'+(current_player==tile.player?1.0:0.5)+'">';
+		//tile.garrison_image.innerHTML = '<img src="images/'+highest_ranking_unit(tile.garrison).type+'.png">';
+}
+function get_tile(mx,my) {
+	var grid_x_approx = mx/tile_scale|0;
+	var grid_y_approx = my/tile_scale|0;
+	var cx,cy;
+	for(var x=Math.max(grid_x_approx-2,0); x<Math.min(grid_x_approx+3,tiles_grid.length); x++) {
+		for(var y=Math.max(grid_y_approx-2,0); y<Math.min(grid_y_approx+3,tiles_grid[x].length); y++) {
+			var poly = tiles_grid[x][y].points;
+			for(var c = false, i = -1, l = poly.length, j = l - 1; ++i < l; j = i)
+				((poly[i].y <= my && my < poly[j].y) || (poly[j].y <= my && my < poly[i].y))
+				&& (mx < (poly[j].x - poly[i].x) * (my - poly[i].y) / (poly[j].y - poly[i].y) + poly[i].x)
+				&& (c = !c);
+			if(c) {cx=x; cy=y;}
+		}
+	}
+	return tiles_grid[cx][cy];
+}
+function capitalize(string) {
+    return string.charAt(0).toUpperCase() + string.slice(1);
+}
+function display_info(p) {
+	if(p.path) { //an order
+		var html = [];
+		html.push('Orders<br><small>');
+		for(var i=0; i<p.path.length; i++) {html.push(p.path[i].title); html.push('<br>');}
+		html.push('</small>');
+		info_box.innerHTML = html.join('');
+		var unit_list = p.units;
+	}
+	else { //a tile
+		info_box.innerHTML = p.title +'<small><br>Temperature: '+ p.base_temperature +'&#8451;' + (p.elevation>=0?'<br>Elevation: '+ (Math.pow(p.elevation,1.0)|0) +'m':'<br>Depth: '+ (Math.pow(Math.abs(p.elevation),1.1)|0) +'m')+'<br>Defense: '+ p.defense+'<br>Player: '+ p.player.title+'</small>';
+		var unit_list = p.garrison;
+	}
+	if(!p.player || p.player==current_player) {
+		clearDOM(garrison_box);
+		for(var i=0; i<unit_list.length; i++) {
+			garrison_box.appendChild(unit_list[i].image);
+		}
+		if(unit_list.length>0) garrison_box.style.display = "block";
+	}
+	if(unit_list.length==0 || (p.player && p.player!=current_player)) garrison_box.style.display = "none";
+	info_box.style.display = "block";
+}
+function highest_ranking_unit(list) {
+	var best = list[0];
+	for(var i=1; i<list.length; i++) {
+		if(1000*list[i].cost+list[i].strength > 1000*best.cost+best.strength) best = list[i];
+	}
+	return best;
+}
+var status_bar_timeout = null;
+function temporary_message(s,t) {
+	status_bar.innerHTML = s;
+	status_bar.style.display = 'block';
+	window.clearTimeout(status_bar_timeout);
+	status_bar_timeout = window.setTimeout(function(){status_bar.style.display = 'none';}, t || 2000);
+}
+var selected_order = null;
+function display_order(order) {
+	if(!order.image) { order.image = document.createElement('div'); document.body.appendChild(order.image); }
+	order.image.innerHTML = "<img src='images/"+highest_ranking_unit(order.units).type+".png'>";
+	order.image.style.cssText = "position:absolute; opacity:0.8; top:"+((order.path[0].py+order.path[1].py)/2-(image_h+2*2)/2|0)+"px; left:"+((order.path[0].px+order.path[1].px)/2-(image_w+2*2)/2|0)+"px; border:2px solid transparent;";
+	order.image.onclick = function() {
+		if(order!=selected_order) {
+			if(selected_order) selected_order.image.style.border = '2px solid transparent';
+			selected_order = order;
+			order.image.style.border = '2px solid yellow';
+			display_info(order);
+			if(selected_tile) unhighlight(selected_tile);
+			selected_tile = null;
+		}
+		else {
+			selected_order = null;
+			order.image.style.border = '2px solid transparent';
+			info_box.style.display = "none";
+			garrison_box.style.display = "none";
+		}
+		return false;
+	}
+	order.image.onmousedown = function() { return false; };
+	orders_g.beginPath();
+	for(var i=1; i<order.path.length; i++) {
+		var headlen = 10;
+		var fromx = order.path[i-1].px; var fromy = order.path[i-1].py;
+		var tox = order.path[i].px; var toy = order.path[i].py;
+		var angle = Math.atan2(toy-fromy,tox-fromx);
+		orders_g.moveTo(fromx, fromy);
+		orders_g.lineTo(tox, toy);
+		orders_g.lineTo(tox-headlen*Math.cos(angle-Math.PI/6),toy-headlen*Math.sin(angle-Math.PI/6));
+		orders_g.moveTo(tox, toy);
+		orders_g.lineTo(tox-headlen*Math.cos(angle+Math.PI/6),toy-headlen*Math.sin(angle+Math.PI/6));
+	}
+	orders_g.lineWidth = 2;
+	orders_g.strokeStyle = current_player.style;
+	orders_g.stroke();
+}
+game_box.onmouseup = function(e) {
+	var mx = e.pageX-canvas.offsetLeft;
+	var my = e.pageY-canvas.offsetTop;
+	var screenx = e.pageX-document.body.scrollLeft;
+	var screeny = e.pageY-document.body.scrollTop;
+	drag_highlight_box.style.display = "none";
+	var selected_something = false;
+	if(mousedown && selected_tile && selected_tile.garrison) { //try picking up units from garrison
+		selected_something = select_from_box(garrison_box,selected_tile.garrison,screenx,screeny,true);
+		if(selected_something) set_garrison_image(selected_tile);
+	}
+	if(!selected_something && mousedown && current_player.starting_units.length>0) { //try picking up units from starting army
+		selected_something = select_from_box(starting_army_box,current_player.starting_units,screenx,screeny);
+	}
+	if(!selected_something && mousedown && drag_path_tiles.length==0 && (Math.abs(mousedown.pagex-mx)>=5 || Math.abs(mousedown.pagey-my)>5)) { //try picking up units from map
+		var topx = Math.min(mx, mousedown.pagex);
+		var topy = Math.min(my, mousedown.pagey);
+		var bottomx = Math.max(mx, mousedown.pagex);
+		var bottomy = Math.max(my, mousedown.pagey);
+	
+		var grid_topx_approx = topx/tile_scale|0;
+		var grid_topy_approx = topy/tile_scale|0;
+		var grid_bottomx_approx = bottomx/tile_scale|0;
+		var grid_bottomy_approx = bottomy/tile_scale|0;
+		
+		var selected_tiles = []; //get all tiles which have their center image selected
+		for(var x=Math.max(grid_topx_approx-2,0); x<Math.min(grid_bottomx_approx+3,tiles_grid.length); x++) {
+			for(var y=Math.max(grid_topy_approx-2,0); y<Math.min(grid_bottomy_approx+3,tiles_grid[x].length); y++) {
+				var t = tiles_grid[x][y];
+				if(t.px+image_w/2>topx && t.px-image_w/2<bottomx && t.py+image_h/2>topy && t.py-image_h/2<bottomy) selected_tiles.push(t);
+			}
+		}
+		for(var i=0; i<selected_tiles.length; i++) {
+			var t = selected_tiles[i];
+			if(t.player == current_player && t.garrison.length>0) {
+				selected_something = true;
+				[].push.apply(held_units, t.garrison);
+				t.garrison = [];
+				set_garrison_image(t);
+			}
+		}
+		clearDOM(held_units_box);
+		for(var i=0; i<held_units.length; i++) {
+			held_units_box.appendChild(held_units[i].image);
+		}
+	}
+	if(!selected_something && mousedown && Math.abs(mousedown.pagex-mx)<3 && Math.abs(mousedown.pagey-my)<3) { //Mouse click
+		var p = get_tile(mx,my);
+		if(current_player.started==false && held_units.length>0) { //initial drop
+			if(p.player==current_player) {
+				[].push.apply(p.garrison, held_units);
+				for(var i=0; i<p.garrison.length; i++) p.garrison[i].tile = p;
+				held_units = [];
+				clearDOM(held_units_box);
+				set_garrison_image(p);
+			}
+			else temporary_message('Place units on your own territory');
+		}
+		//try to select the tile
+		if(selected_tile!=p) {
+			if(selected_tile) unhighlight(selected_tile);
+			selected_tile = p;
+			highlight(p);
+			display_info(p);
+			if(selected_order) selected_order.image.style.border = '2px solid transparent';
+			selected_order = null;
+		}
+		else {
+			selected_tile = null;
+			unhighlight(p);
+			info_box.style.display = "none";
+			garrison_box.style.display = "none";
+		}
+	}
+	mousedown = null;
+	if(drag_path_tiles.length>0) {
+		drag_path_g.clearRect(0,0,canvas.width,canvas.height);
+		if(drag_path_tiles.length>1 && drag_path_tiles[0]!=drag_path_tiles[1]) { //valid path
+			var order = new Order(drag_path_tiles.splice(0), held_units.splice(0));
+			current_player.orders.push(order);
+			held_units = [];
+			held_units_box.innerHTML = '';
+			display_order(order);
+		}
+		drag_path_xy = [];
+		drag_path_tiles = [];
+	}
+	else if(!selected_something && held_units.length>0 && held_units[0].tile!=null) { //put back on own tile
+		clearDOM(held_units_box);
+		for(var i=0; i<held_units.length; i++) {
+			held_units[i].tile.garrison.push(held_units[i]);
+			set_garrison_image(held_units[i].tile);
+		}
+		held_units = [];
+	}
+	return false;
+}
+game_box.onmouseout = function(e) {
+	var src = e.target || e.srcElement;
+	if(src!=canvas) return;
+	//mousedown = null;
+	drag_highlight_box.style.display = "none";
+}
+game_box.onmousemove = function(e) {
+	var mx = e.pageX-canvas.offsetLeft;
+	var my = e.pageY-canvas.offsetTop;
+	held_units_box.style.left = mx+'px';
+	held_units_box.style.top = my+'px';
+	if(drag_path_tiles.length>0) {
+		var p = get_tile(mx,my);
+		if(p!=drag_path_tiles[drag_path_tiles.length-1])
+			drag_path_tiles.push(p);
+		drag_path_xy.push(mx); drag_path_xy.push(my);
+		drag_path_g.beginPath();
+		drag_path_g.moveTo(drag_path_xy[drag_path_xy.length-4], drag_path_xy[drag_path_xy.length-3]);
+		drag_path_g.lineTo(drag_path_xy[drag_path_xy.length-2], drag_path_xy[drag_path_xy.length-1]);
+		drag_path_g.lineWidth = 3;
+		drag_path_g.strokeStyle = current_player.style;
+		drag_path_g.stroke();
+	}
+	else if(mousedown!=null) { //click-and-drag selection in progress
+		drag_highlight_box.style.display = "block";
+		var topx = Math.min(mx, mousedown.pagex);
+		var topy = Math.min(my, mousedown.pagey);
+		var bottomx = Math.max(mx, mousedown.pagex);
+		var bottomy = Math.max(my, mousedown.pagey);
+		drag_highlight_box.style.left = topx+'px';
+		drag_highlight_box.style.top = topy+'px';
+		drag_highlight_box.style.width = (bottomx-topx)+'px';
+		drag_highlight_box.style.height = (bottomy-topy)+'px';
+	}
+	else if(!e.touch && !selected_tile && !selected_order) {
+		if(!p) var p = get_tile(mx,my);
+		display_info(p);
+	}
+	return false;
+}
+var drag_path_xy = [];
+var drag_path_tiles = [];
+game_box.onmousedown = function(e) {
+	var mx = e.pageX-canvas.offsetLeft;
+	var my = e.pageY-canvas.offsetTop;
+	mousedown = {pagex:mx,pagey:my, screenx:mx-document.body.scrollLeft,screeny:my-document.body.scrollTop};
+	if(held_units.length>0) {
+		var t = get_tile(mx,my);
+		if(held_units[0].tile==t) { //start planning a move
+			drag_path_xy.push(mx); drag_path_xy.push(my);
+			drag_path_tiles.push(t);
+		}
+	}
+	return false;
+}
+/*if(window.Touch) {
+	canvas.ontouchstart = canvas.onmousedown.bind({});;
+	canvas.onmousedown = null;
+}*/
+function foo() {
+	ai_move(current_player);
+	starting_army_box.style.display = 'none';
+	for(var i=0; i<tiles.length; i++) { //display own units on map and hide others
+		set_garrison_image(tiles[i]);
+	}
+	orders_g.clearRect(0,0,canvas.width,canvas.height);
+	for(var i=0; i<current_player.orders.length; i++) { //display orders
+		display_order(current_player.orders[i]);
+	}
+	next_turn();
+	window.setTimeout(foo,500);
+}
+document.onkeydown = function(e) {
+	var c = String.fromCharCode(e.which);
+	if(e.which==13) { //Next turn
+		if(current_player.starting_units.length==0) {
+			current_player.started = true;
+			next_turn();
+		}
+		else {
+			temporary_message('You have '+current_player.starting_units.length+' units left to place.');
+		}
+	}
+	if(c==' ') {
+		ai_move(current_player);
+		starting_army_box.style.display = 'none';
+		for(var i=0; i<tiles.length; i++) { //display own units on map and hide others
+			set_garrison_image(tiles[i]);
+		}
+		orders_g.clearRect(0,0,canvas.width,canvas.height);
+		for(var i=0; i<current_player.orders.length; i++) { //display orders
+			display_order(current_player.orders[i]);
+		}
+	}
+	if(c=='0') {
+		status_bar.innerHTML = '';
+		for(var i=0; i<current_player.orders.length; i++) {
+			var o = current_player.orders[i];
+			status_bar.innerHTML += '['+o.units[0].type;
+			for(var j=1; j<o.units.length; j++) {
+				status_bar.innerHTML += ','+o.units[j].type;
+			}
+			status_bar.innerHTML += ']:('+o.path[0].title;
+			for(var j=1; j<o.path.length; j++) {
+				status_bar.innerHTML += ','+o.path[j].title;
+			}
+			status_bar.innerHTML += ')<br>';
+		}
+		if(status_bar.style.display=='block') status_bar.style.display = 'none';
+		else status_bar.style.display = 'block';
+	}
+	if(c=='1') {
+		status_bar.innerHTML = drag_path_tiles.length;
+		if(status_bar.style.display=='block') status_bar.style.display = 'none';
+		else status_bar.style.display = 'block';
+	}
+	if(c=='2') {
+		status_bar.innerHTML = 'Tiles:'+current_player.tiles.length;
+		if(status_bar.style.display=='block') status_bar.style.display = 'none';
+		else status_bar.style.display = 'block';
+	}
+	if((c=='\b' || e.which==46) && selected_order) { //delete order
+		current_player.orders.splice(current_player.orders.indexOf(selected_order), 1);
+		for(var i=0; i<selected_order.units.length; i++) {
+			selected_order.units[i].tile.garrison.push(selected_order.units[i]);
+			set_garrison_image(selected_order.units[i].tile);
+		}
+		document.body.removeChild(selected_order.image);
+		selected_order = null;
+		info_box.style.display = "none";
+		garrison_box.style.display = "none";
+		orders_g.clearRect(0,0,canvas.width,canvas.height);
+		for(var i=0; i<current_player.orders.length; i++) {
+			display_order(current_player.orders[i]);
+		}
+	}
+	return false;
+}
+function units_fight(a,b,tile) {
+	a.health -= b.strength;
+	a.health -= tile.player==b.player?tile.defense:0;
+	a.health -= is_night&&b.is.nocturnal?30:0;
+	if(a.is.building && (a.strength==0 || a.health<=0)) { //capture building
+		//alert(a.player.title+"'s "+a.type+' was captured by '+b.player.title+"'s "+b.type);
+		a.player = b.player;
+		a.health = 0;
+		return a;
+	}
+	if(b.is.undead && a.health<=0 && !a.is.undead) { //raise as undead
+		for(var x in b) {
+			a[x] = b[x];
+		}
+		a.image = b.image.cloneNode(true);
+		a.health = 0;
+		return a;
+	}
+}
+function ai_move(ai) {
+	if(!ai.started) { //Place starting units
+		var border_tiles = []; //analyze map
+		for(var i=0; i<ai.tiles.length; i++) {
+			for(var j=0; j<ai.tiles[i].neighbors.length; j++) {
+				if(ai.tiles[i].neighbors[j].player!=ai) {border_tiles.push(ai.tiles[i]); break;}
+			}
+		}
+		for(var i=0; i<ai.starting_units.length; i++) {
+			do {
+				if(ai_difficulty>0)
+					var t = border_tiles[rint(border_tiles.length)];
+				else
+					var t = ai.tiles[rint(ai.tiles.length)];
+			} while(!allowed_move(ai.starting_units[i], t));
+			t.garrison.push(ai.starting_units[i]);
+			ai.starting_units[i].tile = t;
+		}
+		ai.starting_units = [];
+		ai.started = true;
+	}
+	for(var i=0; i<tiles.length; i++) { //Move any units that are still in garrisons
+		if(tiles[i].player!=ai) continue;
+		for(var j=0; j<tiles[i].garrison.length; j++) {
+			var u = tiles[i].garrison[j];
+			if(u.speed==0) { continue; }
+			tiles[i].garrison.splice(j,1); j--; 
+			var path = [u.tile];
+			while(path.length<u.speed+1) {
+				var closest = null;
+				var distance = 0;
+				for(var e=0; e<tiles.length; e++) {
+					if(tiles[e].player==ai || tiles[e]==path[path.length-1]) continue;
+					var d = Math.abs(tiles[e].x-path[path.length-1].x)+Math.abs(tiles[e].y-path[path.length-1].y);
+					if((closest==null || d<distance) && allowed_move(u,tiles[e])) {
+						closest = [tiles[e]];
+						distance = d;
+					}
+					else if(d==distance) closest.push(tiles[e]);
+				}
+				if(!closest) break;
+				closest = closest[rint(closest.length)];
+				//should do A* here, but whatever.
+				while(path.length<u.speed+1 && path[path.length-1]!=closest) {
+					var now = path[path.length-1];
+					var closest_inc = null;
+					for(var n=1; n<now.neighbors.length; n++) {
+						var d = Math.abs(now.neighbors[n].x-closest.x)+Math.abs(now.neighbors[n].y-closest.y);
+						if(closest_inc==null || d<distance) {
+							closest_inc = [now.neighbors[n]];
+							distance = d;
+						}
+						else if(d==distance) closest_inc.push(now.neighbors[n]);
+					}
+					path.push(closest_inc[rint(closest_inc.length)]);
+				}
+			}
+			ai.orders.push(new Order(path, [u]));
+		}
+	}
+}
+function allowed_move(a,next) {
+	return !(next.elevation<0 && !a.is.aquatic) || (a.is.aquatic && next.elevation>=0 && !next.coast);
+}
+Modes = {single:0,hotseat:1,web:2};
+var mode = Modes.single;
+var rounds_played = 0;
+var is_night = true;
+var ai_difficulty = 1;
+function next_turn() {
+	var previous_player = players[current_player_number];
+	current_player_number++;
+	if(current_player_number==players.length) {
+		current_player_number = 0;
+		rounds_played++;
+	}
+	orders_g.clearRect(0,0,canvas.width,canvas.height);
+	highlight_g.clearRect(0,0,canvas.width,canvas.height);
+	if(previous_player) {
+		for(var i=0; i<previous_player.orders.length; i++) {
+			if(previous_player.orders[i].image) previous_player.orders[i].image.style.display = 'none';
+		}
+	}
+	if(current_player_number==0) { //end of round: calculate effects of all orders
+		var moving_units = [];
+		for(var p=0; p<players.length; p++) { //get all moving units
+			for(var i=0; i<players[p].orders.length; i++) {
+				for(var j=0; j<players[p].orders[i].units.length; j++) {
+					var m = players[p].orders[i].units[j];
+					moving_units.push(m);
+					m.movement_remaining = m.speed;
+					m.order = new Order(players[p].orders[i].path, [m]);
+					m.order.path[m.order.path_location].garrison.push(m);
+				}
+			}
+			while(players[p].orders.length>0) { //only orders attached to units remain
+				var o = players[p].orders.pop();
+				if(o.image && o.image.parentNode) document.body.removeChild(o.image);
+			}
+		}
+		do {
+			var done_moving = true;
+			var crossed_paths = {}; //hashtable with key = edge
+			for(var i=0; i<moving_units.length; i++) { //move each unit
+				var a = moving_units[i];
+				if(!a.order || a.movement_remaining<=0 || a.order.path_location>=a.order.path.length-1) continue;
+				for(var j=0; j<moving_units.length; j++) { //for each pair of units, test if they are passing through each other
+					var b = moving_units[j];
+					if(!b.order || b.movement_remaining<=0 || b.order.path_location>=b.order.path.length-1) continue;
+					if(a.player!=b.player && a.tile==b.order.path[b.order.path_location+1] && b.tile==a.order.path[a.order.path_location+1]) {
+						var key = a.tile.title+b.tile.title;
+						if(!crossed_paths[key]) crossed_paths[key] = [a,b];
+						else [].push.apply(crossed_paths[key], [a,b]);
+					}
+				}
+				var next = a.order.path[a.order.path_location+1];
+				if(!allowed_move(a,next)) {
+					a.order = null;
+				} else {
+					a.movement_remaining--;
+					a.tile.garrison.splice(a.tile.garrison.indexOf(a),1);
+					a.order.path_location++;
+					a.tile = next;
+					if(a.tile.garrison.length==0) a.tile.player = a.player;
+					a.tile.garrison.push(a); //add to new tile
+					if(a.movement_remaining>0) done_moving = false;
+				}
+			}
+			for(var key in crossed_paths) {
+				var p = crossed_paths[key];
+				for(var i=0; i<p.length; i++) p[i].tile.garrison.splice(p[i].tile.garrison.indexOf(p[i]),1);
+				[].push.apply(p[rint(2)].tile.garrison, p); //add them to one of the tiles at random and let them settle it there
+			}
+			for(var t=0; t<tiles.length; t++) { //fight at each tile
+				var captured = [];
+				do {
+					var peace = true;
+					for(var u1=0; u1<tiles[t].garrison.length; u1++) {
+						for(var u2=u1+1; u2<tiles[t].garrison.length; u2++) {
+							var a = tiles[t].garrison[u1];
+							var b = tiles[t].garrison[u2];
+							if(a.player!=b.player && a.health>0 && b.health>0) {
+								var cap = units_fight(a,b,tiles[t]);
+								if(cap) captured.push(cap);
+								cap = units_fight(b,a,tiles[t]);
+								if(cap) captured.push(cap);
+								peace = false;
+							}
+						}
+					}
+				} while(!peace);
+				for(var j=0; j<tiles[t].garrison.length; j++) { if(tiles[t].garrison[j].health<=0) { tiles[t].garrison.splice(j,1); j--; } }
+				if(tiles[t].garrison.length>0) { //victory!
+					tiles[t].player = tiles[t].garrison[0].player;
+					while(captured.length>0) {
+						var a = captured.pop();
+						//alert(a.player.title, tiles[t].player.title);
+						if(a && a.player==tiles[t].player) {
+							a.health = Math.max(a.max_health/10|0,1);
+							a.movement_remaining = 0;
+							a.order = null;
+							tiles[t].garrison.push(a);
+						}
+					}
+				}
+			}
+		} while(!done_moving);
+		//Prepare next round
+		for(var p=0; p<players.length; p++) {
+			if(players[p].started) players[p].units = [];
+			players[p].tiles = [];
+		}
+		for(var i=0; i<tiles.length; i++) {
+			[].push.apply(tiles[i].player.units,tiles[i].garrison);
+			tiles[i].player.tiles.push(tiles[i]);
+			for(var j=0; j<tiles[i].garrison.length; j++) { //heal and display health
+				var u = tiles[i].garrison[j];
+				u.health += u.max_health*0.05 |0;
+				if(u.health>u.max_health) u.health = u.max_health;
+				u.image.firstChild.style.width = (Math.max(100*u.health/u.max_health,1)|0)+'%';
+				if(u.order && u.order.path_location<u.order.path.length-1) {
+					u.order.path = u.order.path.slice(u.order.path_location);
+					u.order.path_location = 0;
+					u.player.orders.push(u.order);
+					tiles[i].garrison.splice(j,1); j--;
+				}
+				//create new units
+				if(u.is.producer) {
+					u.power++;
+					if(u.power>=Stats[u.is.producer][3]) {
+						var u2 = new Unit(u.is.producer);
+						u2.player = u.player;
+						u2.tile = u.tile;
+						tiles[i].garrison.push(u2);
+						u.power -= Stats[u2.type][3];
+					}
+				}
+			}
+		}
+		is_night = !is_night;
+		draw_map(is_night);
+	}
+	current_player = players[current_player_number];
+	current_player_name_bar.innerHTML = current_player.title+"'s turn";
+	if(current_player.tiles.length==0 && current_player.alive) {
+		temporary_message('Player '+current_player.title+' has been eliminated');
+		current_player.alive = false;
+	}
+	var alive_count = 0;
+	for(var i=0; i<players.length; i++) {
+		if(players[i].alive) alive_count++;
+	}
+	if(alive_count==1 && current_player.alive) { //Winner!
+		status_bar.innerHTML = "<div style='font-size:4em;'>Player "+current_player.title+" wins!</div>";
+		status_bar.style.display = 'block';
+	}
+	else 
+		if(!current_player.alive) next_turn();
+	if(mode == Modes.single && current_player_number!=0) { //if not human, move by AI
+		ai_move(current_player);
+		next_turn();
+	}
+	else if(mode == Modes.web) { //wait for network input from other players
+		
+	}
+	else { //display player-specific data
+		selected_tile = null;
+		info_box.style.display = 'none';
+		garrison_box.style.display = 'none';
+		for(var i=0; i<current_player.starting_units.length; i++) { //display starting units
+			starting_army_box.appendChild(current_player.starting_units[i].image);
+			starting_army_box.style.display = "block";
+		}
+		for(var i=0; i<tiles.length; i++) { //display own units on map and hide others
+			set_garrison_image(tiles[i]);
+		}
+		for(var i=0; i<current_player.orders.length; i++) { //display orders
+			display_order(current_player.orders[i]);
+		}
+	}
+}
+next_turn();
+</script>
+</body>
+</html>
